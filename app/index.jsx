@@ -18,62 +18,226 @@ import {
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useEffect } from "react";
 import { Animated, Modal, Pressable, StatusBar } from "react-native";
+import * as Notifications from 'expo-notifications';
 import styles from '../styles/styles';
+
+// Configure notification handler with updated API
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowBanner: true,
+    shouldPlaySound: true,
+    shouldSetBadge: true,
+  }),
+});
 
 export default function App() {
   const [currentScreen, setCurrentScreen] = useState('tasks'); // 'tasks' or 'settings'
   const [isDarkMode, setIsDarkMode] = useState(false); // Dark mode state
+  const [notificationsEnabled, setNotificationsEnabled] = useState(false);
+  const [pushToken, setPushToken] = useState('');
+
+  // Initialize notifications
+  useEffect(() => {
+    initializeNotifications();
+  }, []);
+
+  const initializeNotifications = async () => {
+    try {
+      // Request permissions
+      const { status } = await Notifications.requestPermissionsAsync();
+      if (status !== 'granted') {
+        console.log('Notification permissions denied');
+        return;
+      }
+
+      // Get push token (only works in development build, not Expo Go)
+      try {
+        const token = await Notifications.getExpoPushTokenAsync();
+        setPushToken(token.data);
+        console.log('Push token:', token.data);
+      } catch (tokenError) {
+        console.log('Push token not available (expected in Expo Go):', tokenError.message);
+        // Set a mock token for demonstration
+        setPushToken('expo-go-demo-token');
+      }
+
+      // Load saved notification preference
+      const saved = await AsyncStorage.getItem('notificationsEnabled');
+      if (saved !== null) {
+        setNotificationsEnabled(JSON.parse(saved));
+      }
+
+      // Load saved dark mode preference
+      const savedDarkMode = await AsyncStorage.getItem('darkMode');
+      if (savedDarkMode !== null) {
+        setIsDarkMode(JSON.parse(savedDarkMode));
+      }
+
+    } catch (error) {
+      console.log('Failed to initialize notifications (may be expected in Expo Go):', error.message);
+      // Still load other settings
+      try {
+        const saved = await AsyncStorage.getItem('notificationsEnabled');
+        if (saved !== null) {
+          setNotificationsEnabled(JSON.parse(saved));
+        }
+        const savedDarkMode = await AsyncStorage.getItem('darkMode');
+        if (savedDarkMode !== null) {
+          setIsDarkMode(JSON.parse(savedDarkMode));
+        }
+      } catch (settingError) {
+        console.error('Failed to load settings:', settingError);
+      }
+    }
+  };
+
+  // Schedule daily task reminder
+  const scheduleTaskReminder = async () => {
+    if (!notificationsEnabled) return;
+
+    try {
+      await Notifications.cancelAllScheduledNotificationsAsync();
+      
+      // Try to schedule daily reminder at 9 AM
+      await Notifications.scheduleNotificationAsync({
+        content: {
+          title: '📝 Daily Task Reminder',
+          body: 'Time to check your tasks and stay productive!',
+          data: { screen: 'tasks' },
+        },
+        trigger: {
+          hour: 9,
+          minute: 0,
+          repeats: true,
+        },
+      });
+
+      console.log('Daily reminder scheduled successfully');
+    } catch (error) {
+      console.log('Failed to schedule reminder (expected in Expo Go):', error.message);
+      // Show an immediate notification as demo in Expo Go
+      try {
+        await Notifications.scheduleNotificationAsync({
+          content: {
+            title: '📝 Notification Demo',
+            body: 'Daily reminders work in development builds. This is a demo!',
+            data: { type: 'demo' },
+          },
+          trigger: null, // Show immediately
+        });
+      } catch (demoError) {
+        console.log('Demo notification also failed:', demoError.message);
+      }
+    }
+  };
+
+  // Toggle notifications
+  const toggleNotifications = async () => {
+    const newEnabled = !notificationsEnabled;
+    setNotificationsEnabled(newEnabled);
+    
+    try {
+      await AsyncStorage.setItem('notificationsEnabled', JSON.stringify(newEnabled));
+      
+      if (newEnabled) {
+        await scheduleTaskReminder();
+        Alert.alert(
+          'Notifications Enabled',
+          'Daily reminders scheduled for 9:00 AM!\n\nNote: Full push notifications work in development builds. In Expo Go, you\'ll see demo notifications.',
+          [{ text: 'Got it!', style: 'default' }]
+        );
+      } else {
+        try {
+          await Notifications.cancelAllScheduledNotificationsAsync();
+        } catch (cancelError) {
+          console.log('Failed to cancel notifications (expected in Expo Go):', cancelError.message);
+        }
+        Alert.alert(
+          'Notifications Disabled',
+          'You won\'t receive reminders anymore.',
+          [{ text: 'OK', style: 'default' }]
+        );
+      }
+    } catch (error) {
+      console.error('Failed to toggle notifications:', error);
+    }
+  };
+
+  // Send achievement notification
+  const sendAchievementNotification = async (title, message) => {
+    if (!notificationsEnabled) return;
+
+    try {
+      await Notifications.scheduleNotificationAsync({
+        content: {
+          title,
+          body: message,
+          data: { type: 'achievement' },
+        },
+        trigger: null, // Show immediately
+      });
+      console.log('Achievement notification sent:', title);
+    } catch (error) {
+      console.log('Failed to send achievement notification (expected in Expo Go):', error.message);
+      // Fall back to in-app alert in Expo Go
+      Alert.alert(title, message, [{ text: 'Awesome!', style: 'default' }]);
+    }
+  };
   
   return (
     <>
       <StatusBar barStyle={isDarkMode ? "light-content" : "dark-content"} backgroundColor={isDarkMode ? "#1a1a1a" : "#f5f5f5"} />
       {currentScreen === 'tasks' ? (
-        <TasksContent onSettingsPress={() => setCurrentScreen('settings')} isDarkMode={isDarkMode} />
+        <TasksContent 
+          onSettingsPress={() => setCurrentScreen('settings')} 
+          isDarkMode={isDarkMode} 
+          notificationsEnabled={notificationsEnabled}
+          onAchievement={sendAchievementNotification}
+        />
       ) : (
-        <SettingsContent onBackPress={() => setCurrentScreen('tasks')} isDarkMode={isDarkMode} setIsDarkMode={setIsDarkMode} />
+        <SettingsContent 
+          onBackPress={() => setCurrentScreen('tasks')} 
+          isDarkMode={isDarkMode} 
+          setIsDarkMode={setIsDarkMode}
+          notificationsEnabled={notificationsEnabled}
+          toggleNotifications={toggleNotifications}
+          pushToken={pushToken}
+        />
       )}
     </>
   );
 }
 
-function TasksContent({ onSettingsPress, isDarkMode }) {
+function TasksContent({ onSettingsPress, isDarkMode, notificationsEnabled, onAchievement }) {
   const [tasks, setTasks] = useState([]);
   const [inputText, setInputText] = useState("");
   const [filter, setFilter] = useState("all"); // 'all' | 'active' | 'done'
-  const [notificationsEnabled, setNotificationsEnabled] = useState(false);
 
-  // Load tasks and notification preference from storage
+  // Load tasks from storage
   useEffect(() => {
     const loadData = async () => {
       try {
-        // Load tasks
         const storedTasks = await AsyncStorage.getItem("tasks");
         if (storedTasks !== null) {
           setTasks(JSON.parse(storedTasks));
         }
-
-        // Load notification preference
-        const storedNotifications = await AsyncStorage.getItem("notificationsEnabled");
-        if (storedNotifications !== null) {
-          setNotificationsEnabled(JSON.parse(storedNotifications));
-        }
       } catch (e) {
-        console.error("Failed to load data:", e);
+        console.error("Failed to load tasks:", e);
       }
     };
 
     loadData();
   }, []);
 
-  // Save tasks to storage whenever they change
+  // Save tasks and check for achievements
   useEffect(() => {
     const saveTasks = async () => {
       try {
         await AsyncStorage.setItem("tasks", JSON.stringify(tasks));
         
-        // Check for notification triggers
+        // Check for achievement notifications
         if (notificationsEnabled) {
-          checkNotificationTriggers();
+          checkAchievements();
         }
       } catch (e) {
         console.error("Failed to save tasks:", e);
@@ -82,6 +246,27 @@ function TasksContent({ onSettingsPress, isDarkMode }) {
 
     saveTasks();
   }, [tasks, notificationsEnabled]);
+
+  const checkAchievements = () => {
+    const activeTasks = tasks.filter(task => !task.completed);
+    const completedTasks = tasks.filter(task => task.completed);
+    
+    // Achievement: 10 tasks completed
+    if (completedTasks.length === 10) {
+      onAchievement(
+        '🎉 Achievement Unlocked!',
+        'You\'ve completed 10 tasks! Great job staying productive!'
+      );
+    }
+    
+    // Achievement: All tasks complete
+    if (activeTasks.length === 0 && tasks.length > 0) {
+      onAchievement(
+        '✅ All Tasks Complete!',
+        'Congratulations! You\'ve completed all your tasks.'
+      );
+    }
+  };
 
   const filteredTasks = tasks.filter((task) => {
     if (filter === "active") return !task.completed;
@@ -110,28 +295,6 @@ function TasksContent({ onSettingsPress, isDarkMode }) {
       prev.map((t) => (t.id === editingTask.id ? { ...t, text: trimmed } : t)),
     );
     closeEditModal();
-  };
-
-  const checkNotificationTriggers = () => {
-    const activeTasks = tasks.filter(task => !task.completed);
-    const completedTasks = tasks.filter(task => task.completed);
-    
-    // Milestone notifications
-    if (completedTasks.length === 10 && tasks.length === 10) {
-      Alert.alert(
-        '🎉 Achievement Unlocked!',
-        'You\'ve completed 10 tasks! Great job staying productive!',
-        [{ text: 'Awesome!', style: 'default' }]
-      );
-    }
-    
-    if (activeTasks.length === 0 && tasks.length > 0) {
-      Alert.alert(
-        '✅ All Tasks Complete!',
-        'Congratulations! You\'ve completed all your tasks.',
-        [{ text: 'Keep it up!', style: 'default' }]
-      );
-    }
   };
 
   const addTask = () => {
@@ -333,25 +496,7 @@ function TaskItem({ task, onToggle, onDelete, onEdit, isDarkMode }) {
   );
 }
 
-function SettingsContent({ onBackPress, isDarkMode, setIsDarkMode }) {
-  const [notificationsEnabled, setNotificationsEnabled] = useState(false);
-
-  useEffect(() => {
-    // Load notification preference from AsyncStorage
-    const loadNotificationPreference = async () => {
-      try {
-        const saved = await AsyncStorage.getItem('notificationsEnabled');
-        if (saved !== null) {
-          setNotificationsEnabled(JSON.parse(saved));
-        }
-      } catch (error) {
-        console.error('Failed to load notification preference:', error);
-      }
-    };
-
-    loadNotificationPreference();
-  }, []);
-
+function SettingsContent({ onBackPress, isDarkMode, setIsDarkMode, notificationsEnabled, toggleNotifications, pushToken }) {
   const clearAllTasks = () => {
     Alert.alert(
       'Clear All Tasks',
@@ -386,33 +531,6 @@ function SettingsContent({ onBackPress, isDarkMode, setIsDarkMode }) {
     }
   };
 
-  const toggleNotifications = async () => {
-    const newNotificationsEnabled = !notificationsEnabled;
-    setNotificationsEnabled(newNotificationsEnabled);
-    
-    // Save notification preference to AsyncStorage
-    try {
-      await AsyncStorage.setItem('notificationsEnabled', JSON.stringify(newNotificationsEnabled));
-      
-      // Show feedback to user
-      if (newNotificationsEnabled) {
-        Alert.alert(
-          'Notifications Enabled',
-          'You will receive task reminders and updates. Note: This is a demo - actual push notifications require additional setup.',
-          [{ text: 'OK', style: 'default' }]
-        );
-      } else {
-        Alert.alert(
-          'Notifications Disabled',
-          'You will no longer receive task reminders.',
-          [{ text: 'OK', style: 'default' }]
-        );
-      }
-    } catch (error) {
-      console.error('Failed to save notification preference:', error);
-    }
-  };
-
   return (
     <View style={[styles.container, isDarkMode && styles.darkContainer]}>
       <View style={styles.header}>
@@ -438,7 +556,7 @@ function SettingsContent({ onBackPress, isDarkMode, setIsDarkMode }) {
         </View>
         
         <View style={[styles.settingRow, isDarkMode && styles.darkSettingRow]}>
-          <Text style={[styles.settingLabel, isDarkMode && styles.darkSettingLabel]}>Enable Notifications</Text>
+          <Text style={[styles.settingLabel, isDarkMode && styles.darkSettingLabel]}>Push Notifications</Text>
           <Switch
             value={notificationsEnabled}
             onValueChange={toggleNotifications}
@@ -446,6 +564,34 @@ function SettingsContent({ onBackPress, isDarkMode, setIsDarkMode }) {
             thumbColor={notificationsEnabled ? '#f5dd4b' : '#f4f3f4'}
           />
         </View>
+      </View>
+
+      {/* Notification Info Section */}
+      <View style={[styles.section, isDarkMode && styles.darkSection]}>
+        <Text style={[styles.sectionTitle, isDarkMode && styles.darkSectionTitle]}>Notification Info</Text>
+        
+        <View style={[styles.settingRow, isDarkMode && styles.darkSettingRow]}>
+          <Text style={[styles.settingLabel, isDarkMode && styles.darkSettingLabel]}>Status</Text>
+          <Text style={[styles.settingValue, isDarkMode && styles.darkSettingValue]}>
+            {notificationsEnabled ? 'Enabled' : 'Disabled'}
+          </Text>
+        </View>
+        
+        <View style={[styles.settingRow, isDarkMode && styles.darkSettingRow]}>
+          <Text style={[styles.settingLabel, isDarkMode && styles.darkSettingLabel]}>Daily Reminder</Text>
+          <Text style={[styles.settingValue, isDarkMode && styles.darkSettingValue]}>
+            {notificationsEnabled ? '9:00 AM' : 'N/A'}
+          </Text>
+        </View>
+        
+        {pushToken && (
+          <View style={[styles.settingRow, isDarkMode && styles.darkSettingRow]}>
+            <Text style={[styles.settingLabel, isDarkMode && styles.darkSettingLabel]}>Push Token</Text>
+            <Text style={[styles.settingValue, isDarkMode && styles.darkSettingValue, { fontSize: 10 }]}>
+              {pushToken.substring(0, 20)}...
+            </Text>
+          </View>
+        )}
       </View>
 
       {/* Data Section */}
